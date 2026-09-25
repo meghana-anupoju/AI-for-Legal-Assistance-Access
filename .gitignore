@@ -1,0 +1,19 @@
+# Python cache and environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Test and build artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Streamlit logs
+.streamlit/secrets.toml

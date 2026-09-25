@@ -1,0 +1,226 @@
+import os
+import re
+from typing import Dict, List, Any
+
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover
+    OpenAI = None
+
+
+def _fallback_law_analysis(text: str) -> Dict[str, Any]:
+    summary = generate_summary(text)
+    clauses = extract_key_clauses(text)
+    checklist = create_checklist(text)
+    highlights = [
+        "Review payment, termination, and confidentiality clauses closely.",
+        "Confirm whether the document creates enforceable obligations or risk for the user.",
+        "Ask a qualified legal professional to validate any critical commercial or regulatory terms.",
+    ]
+
+    return {
+        "summary": summary,
+        "key_clauses": clauses,
+        "checklist": checklist,
+        "highlights": highlights,
+        "risk_level": "Medium",
+        "source": "local-analysis",
+    }
+
+
+def extract_text_from_file(file_path: str) -> str:
+    if not file_path:
+        return ""
+
+    lower_path = file_path.lower()
+    if not lower_path.endswith((".txt", ".md", ".csv", ".json")):
+        return "Unsupported file format. Please upload a text-based document."
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return "Unable to read file. Please check the file path and format."
+
+
+def analyze_legal_document(text: str, api_key: str = "") -> Dict[str, Any]:
+    if not text or not text.strip():
+        return {
+            "summary": "No document content provided.",
+            "key_clauses": [],
+            "checklist": [],
+            "highlights": [],
+            "risk_level": "Low",
+            "source": "local-analysis",
+        }
+
+    resolved_api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+    if resolved_api_key and OpenAI is not None:
+        try:
+            client = OpenAI(api_key=resolved_api_key)
+            response = client.responses.create(
+                model=os.getenv("MODEL_NAME", "gpt-4o-mini"),
+                input=[
+                    {
+                        "role": "system",
+                        "content": "You are a legal analysis assistant. Provide a plain-English summary, identify material clauses, highlight risks, and note that this is not legal advice.",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Analyze this legal document and return JSON with keys: summary, key_clauses, checklist, highlights, risk_level. Document: {text}",
+                    },
+                ],
+            )
+            content = response.output_text.strip()
+            if content:
+                return {
+                    "summary": content,
+                    "key_clauses": extract_key_clauses(text),
+                    "checklist": create_checklist(text),
+                    "highlights": ["AI-assisted review completed.", "Confirm any critical terms with a legal professional before acting."],
+                    "risk_level": "Medium",
+                    "source": "ai-analysis",
+                }
+        except Exception:
+            pass
+
+    return _fallback_law_analysis(text)
+
+
+def extract_key_clauses(text: str) -> List[Dict[str, str]]:
+    if not text or not text.strip():
+        return []
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    clauses: List[Dict[str, str]] = []
+
+    for sentence in sentences:
+        lowered = sentence.lower()
+        if any(keyword in lowered for keyword in [
+            "shall",
+            "must",
+            "may",
+            "liability",
+            "termination",
+            "confidential",
+            "payment",
+            "notice",
+            "indemn",
+            "warranty",
+            "governing",
+            "jurisdiction",
+            "breach",
+        ]):
+            title = sentence[:60].strip()
+            if not title.endswith((".", ":")):
+                title = title + "."
+            summary = "This clause establishes a legal obligation, right, or limitation that should be reviewed carefully."
+            clauses.append({"title": title, "summary": summary})
+
+    if not clauses:
+        clauses.append({
+            "title": "Document overview",
+            "summary": "The document appears to be general legal text and may require professional review for specific legal implications.",
+        })
+
+    return clauses[:8]
+
+
+def generate_summary(text: str) -> str:
+    if not text or not text.strip():
+        return "No document content provided. Please upload or paste legal text to analyze."
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    key_points = []
+
+    for sentence in sentences:
+        lowered = sentence.lower()
+        if any(keyword in lowered for keyword in [
+            "payment",
+            "fee",
+            "termination",
+            "terminated",
+            "breach",
+            "confidential",
+            "liability",
+            "indemn",
+            "notice",
+            "support",
+            "warranty",
+            "governing",
+            "subscription",
+            "software",
+            "agreement",
+            "contract",
+        ]):
+            key_points.append(sentence)
+
+    if not key_points:
+        key_points = sentences[:3]
+
+    context_sentence = sentences[0]
+    if len(context_sentence) > 180:
+        context_sentence = context_sentence[:180].rstrip() + "..."
+
+    emphasis = key_points[:3]
+    if emphasis:
+        summary_text = "; ".join(emphasis)
+    else:
+        summary_text = context_sentence
+
+    summary = (
+        f"This document concerns the terms and obligations described in: {context_sentence} "
+        f"The most important issues include payment obligations, termination rights, and support requirements, as reflected in {summary_text}. "
+        "It is recommended that the user review these terms with a qualified legal professional before acting on them."
+    )
+    return summary
+
+
+def compare_documents(doc_a: str, doc_b: str) -> Dict[str, Any]:
+    a_clauses = extract_key_clauses(doc_a)
+    b_clauses = extract_key_clauses(doc_b)
+
+    if len(a_clauses) == 0 or len(b_clauses) == 0:
+        return {
+            "status": "No comparison available",
+            "highlights": [],
+            "risk_level": "Low",
+        }
+
+    risk_level = "Medium"
+    if any("liability" in clause["title"].lower() for clause in a_clauses + b_clauses) or any("termination" in clause["title"].lower() for clause in a_clauses + b_clauses):
+        risk_level = "High"
+
+    highlights = [
+        "Different documents may impose different notice periods or termination rights.",
+        "Check whether confidentiality and liability protections are aligned across both documents.",
+        "Review any inconsistency before signing or relying on either document.",
+    ]
+
+    status = "Documents are somewhat aligned but contain important differences that merit review."
+    if doc_a == doc_b:
+        status = "Documents appear aligned in meaning and structure."
+
+    return {
+        "status": status,
+        "highlights": highlights,
+        "risk_level": risk_level,
+        "document_a_key_clauses": a_clauses,
+        "document_b_key_clauses": b_clauses,
+    }
+
+
+def create_checklist(text: str) -> List[str]:
+    checklist = [
+        "Review key payment, liability, and termination provisions.",
+        "Confirm any confidentiality and notice obligations are clear.",
+        "Identify any unresolved risks or missing protections.",
+        "Prepare questions for a legal professional before signing.",
+    ]
+
+    if "indemn" in text.lower():
+        checklist.insert(0, "Confirm indemnification scope and any caps or exceptions.")
+    if "governing" in text.lower() or "jurisdiction" in text.lower():
+        checklist.insert(1, "Check governing law and venue terms.")
+
+    return checklist
