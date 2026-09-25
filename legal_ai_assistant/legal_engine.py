@@ -8,6 +8,32 @@ except ImportError:  # pragma: no cover
     OpenAI = None
 
 
+def sanitize_document_text(text: str) -> str:
+    if text is None:
+        return ""
+
+    cleaned = str(text).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = cleaned.replace("\x00", "")
+    return cleaned.strip()
+
+
+def validate_api_key(api_key: str) -> bool:
+    if api_key is None:
+        return False
+
+    key = str(api_key).strip()
+    if not key:
+        return False
+    if any(ch.isspace() for ch in key):
+        return False
+    if key.startswith("sk-") and len(key) >= 16:
+        return True
+    if key.startswith("gpt-") and len(key) >= 16:
+        return True
+    return False
+
+
 def _fallback_law_analysis(text: str) -> Dict[str, Any]:
     summary = generate_summary(text)
     clauses = extract_key_clauses(text)
@@ -33,18 +59,36 @@ def extract_text_from_file(file_path: str) -> str:
         return ""
 
     lower_path = file_path.lower()
-    if not lower_path.endswith((".txt", ".md", ".csv", ".json")):
-        return "Unsupported file format. Please upload a text-based document."
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
+        if lower_path.endswith(".pdf"):
+            try:
+                from pypdf import PdfReader
+            except ImportError:
+                return "PDF support is unavailable because the required dependency is not installed."
+
+            try:
+                reader = PdfReader(file_path)
+                pages = []
+                for page in reader.pages:
+                    text = page.extract_text() or ""
+                    pages.append(text)
+                return "\n".join(pages)
+            except Exception:
+                return "Unable to read PDF text. Please ensure the file is a valid PDF."
+
+        if lower_path.endswith((".txt", ".md", ".csv", ".json")):
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+
+        return "Unsupported file format. Please upload a text-based document."
     except Exception:
         return "Unable to read file. Please check the file path and format."
 
 
 def analyze_legal_document(text: str, api_key: str = "") -> Dict[str, Any]:
-    if not text or not text.strip():
+    cleaned_text = sanitize_document_text(text)
+    if not cleaned_text:
         return {
             "summary": "No document content provided.",
             "key_clauses": [],
@@ -54,8 +98,8 @@ def analyze_legal_document(text: str, api_key: str = "") -> Dict[str, Any]:
             "source": "local-analysis",
         }
 
-    resolved_api_key = api_key or os.getenv("OPENAI_API_KEY", "")
-    if resolved_api_key and OpenAI is not None:
+    resolved_api_key = (api_key or os.getenv("OPENAI_API_KEY", "")).strip()
+    if validate_api_key(resolved_api_key) and OpenAI is not None:
         try:
             client = OpenAI(api_key=resolved_api_key)
             response = client.responses.create(
@@ -67,7 +111,7 @@ def analyze_legal_document(text: str, api_key: str = "") -> Dict[str, Any]:
                     },
                     {
                         "role": "user",
-                        "content": f"Analyze this legal document and return JSON with keys: summary, key_clauses, checklist, highlights, risk_level. Document: {text}",
+                        "content": f"Analyze this legal document and return JSON with keys: summary, key_clauses, checklist, highlights, risk_level. Document: {cleaned_text}",
                     },
                 ],
             )
@@ -75,8 +119,8 @@ def analyze_legal_document(text: str, api_key: str = "") -> Dict[str, Any]:
             if content:
                 return {
                     "summary": content,
-                    "key_clauses": extract_key_clauses(text),
-                    "checklist": create_checklist(text),
+                    "key_clauses": extract_key_clauses(cleaned_text),
+                    "checklist": create_checklist(cleaned_text),
                     "highlights": ["AI-assisted review completed.", "Confirm any critical terms with a legal professional before acting."],
                     "risk_level": "Medium",
                     "source": "ai-analysis",
@@ -84,14 +128,15 @@ def analyze_legal_document(text: str, api_key: str = "") -> Dict[str, Any]:
         except Exception:
             pass
 
-    return _fallback_law_analysis(text)
+    return _fallback_law_analysis(cleaned_text)
 
 
 def extract_key_clauses(text: str) -> List[Dict[str, str]]:
-    if not text or not text.strip():
+    cleaned_text = sanitize_document_text(text)
+    if not cleaned_text:
         return []
 
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned_text) if s.strip()]
     clauses: List[Dict[str, str]] = []
 
     for sentence in sentences:
@@ -127,10 +172,11 @@ def extract_key_clauses(text: str) -> List[Dict[str, str]]:
 
 
 def generate_summary(text: str) -> str:
-    if not text or not text.strip():
+    cleaned_text = sanitize_document_text(text)
+    if not cleaned_text:
         return "No document content provided. Please upload or paste legal text to analyze."
 
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned_text) if s.strip()]
     key_points = []
 
     for sentence in sentences:
@@ -177,8 +223,10 @@ def generate_summary(text: str) -> str:
 
 
 def compare_documents(doc_a: str, doc_b: str) -> Dict[str, Any]:
-    a_clauses = extract_key_clauses(doc_a)
-    b_clauses = extract_key_clauses(doc_b)
+    left_doc = sanitize_document_text(doc_a)
+    right_doc = sanitize_document_text(doc_b)
+    a_clauses = extract_key_clauses(left_doc)
+    b_clauses = extract_key_clauses(right_doc)
 
     if len(a_clauses) == 0 or len(b_clauses) == 0:
         return {
@@ -210,7 +258,58 @@ def compare_documents(doc_a: str, doc_b: str) -> Dict[str, Any]:
     }
 
 
+def assess_document_risk(text: str) -> Dict[str, Any]:
+    cleaned_text = sanitize_document_text(text)
+    if not cleaned_text:
+        return {
+            "score": 0,
+            "level": "Low",
+            "risks": ["No document content was provided for review."],
+        }
+
+    lowered = cleaned_text.lower()
+    factors = {
+        "liability": "High liability exposure or uncapped damages" if "liability" in lowered or "damages" in lowered else None,
+        "termination": "Termination rights without sufficient notice" if "termination" in lowered or "terminate" in lowered else None,
+        "indemnity": "Indemnity obligations may create significant risk" if "indemn" in lowered else None,
+        "confidentiality": "Confidentiality obligations must be reviewed carefully" if "confidential" in lowered else None,
+        "payment": "Payment and fee obligations may affect commercial risk" if "payment" in lowered or "fee" in lowered else None,
+    }
+
+    score = 0
+    risks = []
+    for key, message in factors.items():
+        if message:
+            risks.append(message)
+            score += 15
+
+    if "no notice" in lowered or "without notice" in lowered:
+        score += 15
+        risks.append("Notice obligations are missing or weak.")
+
+    if "all damages" in lowered or "liable for all damages" in lowered or "caps indemnity at zero" in lowered:
+        score += 15
+        risks.append("The contract creates unusually severe exposure for damages or indemnity.")
+
+    if any(word in lowered for word in ["must", "shall", "required", "mandatory"]):
+        score += 10
+
+    if score >= 70:
+        level = "High"
+    elif score >= 40:
+        level = "Medium"
+    else:
+        level = "Low"
+
+    return {
+        "score": min(score, 100),
+        "level": level,
+        "risks": risks[:5] if risks else ["No obvious high-risk patterns were detected in the provided text."],
+    }
+
+
 def create_checklist(text: str) -> List[str]:
+    cleaned_text = sanitize_document_text(text)
     checklist = [
         "Review key payment, liability, and termination provisions.",
         "Confirm any confidentiality and notice obligations are clear.",
@@ -218,9 +317,10 @@ def create_checklist(text: str) -> List[str]:
         "Prepare questions for a legal professional before signing.",
     ]
 
-    if "indemn" in text.lower():
+    lowered_text = cleaned_text.lower()
+    if "indemn" in lowered_text:
         checklist.insert(0, "Confirm indemnification scope and any caps or exceptions.")
-    if "governing" in text.lower() or "jurisdiction" in text.lower():
+    if "governing" in lowered_text or "jurisdiction" in lowered_text:
         checklist.insert(1, "Check governing law and venue terms.")
 
     return checklist

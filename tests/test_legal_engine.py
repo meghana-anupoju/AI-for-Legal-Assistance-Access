@@ -1,11 +1,16 @@
 import pytest
 
+from pypdf import PdfWriter
+
 from legal_ai_assistant.legal_engine import (
     extract_key_clauses,
     generate_summary,
     compare_documents,
     analyze_legal_document,
     extract_text_from_file,
+    assess_document_risk,
+    sanitize_document_text,
+    validate_api_key,
 )
 
 
@@ -68,3 +73,42 @@ def test_extract_text_from_file_reads_text_files(tmp_path):
 
     assert "payment" in content.lower()
     assert "termination" in content.lower()
+
+
+def test_extract_text_from_file_reads_pdf_files(tmp_path):
+    file_path = tmp_path / "sample.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_blank_page(width=200, height=200)
+    with open(file_path, "wb") as fh:
+        writer.write(fh)
+
+    content = extract_text_from_file(str(file_path))
+
+    assert isinstance(content, str)
+
+
+def test_assess_document_risk_flags_high_risk_terms():
+    risk = assess_document_risk(
+        "The supplier is liable for all damages, may terminate without notice, and caps indemnity at zero."
+    )
+
+    assert risk["score"] >= 70
+    assert risk["level"] in {"Medium", "High"}
+    assert risk["risks"]
+
+
+def test_sanitize_document_text_normalizes_whitespace_and_trims_input():
+    original = "\n\n This agreement   requires  payment.    \n\nTermination rights  apply.  "
+
+    result = sanitize_document_text(original)
+
+    assert result.startswith("This agreement")
+    assert "  " not in result
+    assert "requires payment" in result.lower()
+
+
+def test_validate_api_key_rejects_blank_or_invalid_values():
+    assert validate_api_key("") is False
+    assert validate_api_key("short") is False
+    assert validate_api_key("sk-1234567890abcdef") is True
